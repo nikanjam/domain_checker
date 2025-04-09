@@ -6,10 +6,18 @@ import requests
 import urllib3
 import logging
 from bs4 import BeautifulSoup
-from tqdm import tqdm  # package for loading
+from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Tuple, Optional
 
 # Disable InsecureRequestWarning
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Constants
+CPANEL_PATH = "/usr/local/cpanel"
+DIRECTADMIN_PATH = "/usr/local/directadmin"
+TRANSFER_DIR = "/home/transfer"
+USERDATA_DOMAINS_FILE = "/etc/userdatadomains"
 
 # Logging setup for saving to domain_status.log
 logging.basicConfig(
@@ -28,6 +36,7 @@ status_handler.setFormatter(status_format)
 status_logger.addHandler(status_handler)
 status_logger.propagate = False
 
+
 class DomainManager:
     def __init__(self):
         self.transfer_dir = self.create_transfer_directory()
@@ -36,31 +45,30 @@ class DomainManager:
         self.domains = []  # Domains List
         self.domain_paths = self.get_domains()  # Array for domain path in DA or cPanel
 
-    def check_control_panel(self):
-        if os.path.exists("/usr/local/cpanel"):
+    def check_control_panel(self) -> str:
+        if os.path.exists(CPANEL_PATH):
             return "cpanel"
-        elif os.path.exists("/usr/local/directadmin"):
+        elif os.path.exists(DIRECTADMIN_PATH):
             return "directadmin"
         else:
             return "unknown"
 
-    def create_transfer_directory(self):
-        transfer_dir = "/home/transfer"
-        if not os.path.exists(transfer_dir):
+    def create_transfer_directory(self) -> str:
+        if not os.path.exists(TRANSFER_DIR):
             try:
-                os.makedirs(transfer_dir)
-                logging.info(f"Directory {transfer_dir} created successfully.")
+                os.makedirs(TRANSFER_DIR)
+                logging.info(f"Directory {TRANSFER_DIR} created successfully.")
             except Exception as e:
-                logging.error(f"Error creating directory {transfer_dir}: {e}")
+                logging.error(f"Error creating directory {TRANSFER_DIR}: {e}")
         else:
-            logging.info(f"Directory {transfer_dir} already exists.")
-        return transfer_dir
+            logging.info(f"Directory {TRANSFER_DIR} already exists.")
+        return TRANSFER_DIR
 
-    def get_server_ip(self):
+    def get_server_ip(self) -> str:
         hostname = socket.gethostname()
         return socket.gethostbyname(hostname)
 
-    def get_domains(self):
+    def get_domains(self) -> List[Tuple[str, Optional[str]]]:
         if self.panel_type == "cpanel":
             return self.get_cpanel_domains()
         elif self.panel_type == "directadmin":
@@ -69,32 +77,39 @@ class DomainManager:
             logging.error("Unknown control panel.")
             return []
 
-    def get_cpanel_domains(self):
+    def get_cpanel_domains(self) -> List[Tuple[str, Optional[str]]]:
         try:
             command = ["whmapi1", "--output=jsonpretty", "get_domain_info"]
-            result = subprocess.run(command, stdout=subprocess.PIPE, universal_newlines=True)
+            result = subprocess.run(command, stdout=subprocess.PIPE, universal_newlines=True, check=True)
 
             output_json = json.loads(result.stdout)
             self.domains = [entry["domain"] for entry in output_json["data"]["domains"] if "domain" in entry]
             return [(domain, self.get_cpanel_domain_path(domain)) for domain in self.domains]
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Error running WHM API command: {e}")
+            return []
         except Exception as e:
             logging.error(f"Error extracting domains from cPanel: {e}")
             return []
 
-    def get_cpanel_domain_path(self, domain):
+    def get_cpanel_domain_path(self, domain: str) -> Optional[str]:
         try:
-            with open("/etc/userdatadomains", "r") as file:
-                for line in file:
-                    if line.startswith(domain):
-                        parts = line.split("==")
-                        if len(parts) > 4:
-                            return parts[4].strip()
+            with open(USERDATA_DOMAINS_FILE, "r") as file:
+                lines = file.readlines()
+            for line in lines:
+                if line.startswith(domain):
+                    parts = line.split("==")
+                    if len(parts) > 4:
+                        return parts[4].strip()
+            return None
+        except FileNotFoundError:
+            logging.error(f"{USERDATA_DOMAINS_FILE} file not found.")
             return None
         except Exception as e:
             logging.error(f"Error finding path for {domain} in cPanel: {e}")
             return None
 
-    def get_directadmin_domains(self):
+    def get_directadmin_domains(self) -> List[Tuple[str, str]]:
         domain_paths = []
         try:
             for user_dir in os.listdir("/home"):
@@ -109,20 +124,20 @@ class DomainManager:
             logging.error(f"Error extracting domains and paths from DirectAdmin: {e}")
             return []
 
-    def get_domain_path(self, domain):
+    def get_domain_path(self, domain: str) -> Optional[str]:
         for d, path in self.domain_paths:
             if d == domain:
                 return path
         return None
 
-    def get_domain_ip(self, domain):
+    def get_domain_ip(self, domain: str) -> Optional[str]:
         try:
             return socket.gethostbyname(domain)
         except socket.gaierror:
             logging.error(f"Error resolving domain {domain}")
             return None
 
-    def check_status(self, domain):
+    def check_status(self, domain: str) -> Optional[str]:
         try:
             url = f"http://{domain}"
             headers = {
@@ -136,20 +151,19 @@ class DomainManager:
                 verify=False
             )
 
-            # Check if status is 200 and look for autoindex.css
             if response.status_code == 200:
                 soup = BeautifulSoup(response.content, 'html.parser')
                 for link in soup.find_all('link', href=True):
                     if 'autoindex.css' in link['href']:
-                        return "index of"  # Change status to "index of" if autoindex.css is found
-                return response.status_code
+                        return "index of"
+                return str(response.status_code)
             else:
-                return response.status_code
+                return str(response.status_code)
         except requests.exceptions.RequestException as e:
             logging.error(f"Error checking status for {domain}: {e}")
             return None
 
-    def save_domains_to_file(self, domains, file_path):
+    def save_domains_to_file(self, domains: List[str], file_path: str):
         try:
             with open(file_path, "w") as file:
                 file.writelines(f"{domain}\n" for domain in domains)
@@ -157,8 +171,9 @@ class DomainManager:
         except Exception as e:
             logging.error(f"Error saving domains to file {file_path}: {e}")
 
+
 class DomainStatusChecker:
-    def __init__(self, domain_manager):
+    def __init__(self, domain_manager: DomainManager):
         self.domain_manager = domain_manager
         self.mismatched_domains = []
         self.healthy_domains = []
@@ -166,28 +181,37 @@ class DomainStatusChecker:
         self.no_ping_domains = []
 
     def check_domains(self):
-        total_domains = len(self.domain_manager.domains)
-        for index, domain in enumerate(self.domain_manager.domains, start=1):
-            print(f"Checking domain {index}/{total_domains}: {domain}...", end="\r")
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {
+                executor.submit(self.check_single_domain, domain): domain
+                for domain in self.domain_manager.domains
+            }
+            for future in tqdm(futures, desc="Checking domains"):
+                domain = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    logging.error(f"Error checking domain {domain}: {e}")
 
-            domain_ip = self.domain_manager.get_domain_ip(domain)
-            if domain_ip:
-                logging.info(f"Domain: {domain}, Domain IP: {domain_ip}")
-                if domain_ip == self.domain_manager.server_ip:
-                    logging.info(f"Domain {domain} is directly on the server.")
-                    self.direct_domains.append(domain)
-                else:
-                    logging.info(f"IP mismatch for {domain}.")
-                    domain_path = self.domain_manager.get_domain_path(domain)
-                    if self.save_file_and_upload(domain, domain_path):
-                        self.healthy_domains.append(domain)
-                    else:
-                        self.mismatched_domains.append(domain)
+    def check_single_domain(self, domain: str):
+        domain_ip = self.domain_manager.get_domain_ip(domain)
+        if domain_ip:
+            logging.info(f"Domain: {domain}, Domain IP: {domain_ip}")
+            if domain_ip == self.domain_manager.server_ip:
+                logging.info(f"Domain {domain} is directly on the server.")
+                self.direct_domains.append(domain)
             else:
-                logging.info(f"Domain {domain} cannot be pinged.")
-                self.no_ping_domains.append(domain)
+                logging.info(f"IP mismatch for {domain}.")
+                domain_path = self.domain_manager.get_domain_path(domain)
+                if self.save_file_and_upload(domain, domain_path):
+                    self.healthy_domains.append(domain)
+                else:
+                    self.mismatched_domains.append(domain)
+        else:
+            logging.info(f"Domain {domain} cannot be pinged.")
+            self.no_ping_domains.append(domain)
 
-    def save_file_and_upload(self, domain, domain_path):
+    def save_file_and_upload(self, domain: str, domain_path: Optional[str]) -> bool:
         if domain_path and os.path.exists(domain_path):
             file_path = os.path.join(domain_path, "mismatch.txt")
             try:
@@ -235,6 +259,7 @@ class DomainStatusChecker:
 
         print("\nStatus check completed.")
 
+
 def main():
     domain_manager = DomainManager()
     if not domain_manager.domain_paths:
@@ -246,6 +271,7 @@ def main():
     status_checker.save_results()
 
     print("\nThe log has been saved in 'domain_status.log' and the domain statuses have been saved in 'domain_statuses.log'.")
+
 
 if __name__ == "__main__":
     main()
