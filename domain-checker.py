@@ -12,6 +12,26 @@ import multiprocessing
 from typing import List, Tuple, Optional
 from jinja2 import Environment, FileSystemLoader
 import urllib3
+import subprocess
+import sys
+
+required_packages = [
+    "tqdm",
+    "aiohttp",
+    "beautifulsoup4",
+    "jinja2",
+    "urllib3"
+]
+
+def install_missing_packages():
+    for package in required_packages:
+        try:
+            __import__(package if package != "beautifulsoup4" else "bs4")
+        except ImportError:
+            print(f"📦 Installing missing package: {package}")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+install_missing_packages()
 
 # Disable InsecureRequestWarning
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -339,3 +359,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
