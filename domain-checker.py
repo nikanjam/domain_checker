@@ -1,5 +1,110 @@
-import os
+#!/usr/bin/env python3
+"""
+Domain Status Checker with Auto Package Installation
+"""
+
 import subprocess
+import sys
+import importlib.util
+
+def install_required_packages():
+    """Auto-install required packages with uv support"""
+    
+    required_packages = {
+        'beautifulsoup4': 'bs4',
+        'tqdm': 'tqdm', 
+        'aiohttp': 'aiohttp',
+        'jinja2': 'jinja2',
+        'urllib3': 'urllib3'
+    }
+    
+    missing_packages = []
+    
+    print("🔍 Checking required packages...")
+    for pip_name, import_name in required_packages.items():
+        if importlib.util.find_spec(import_name) is None:
+            missing_packages.append(pip_name)
+            print(f"❌ {pip_name} is not installed")
+        else:
+            print(f"✅ {pip_name} is already installed")
+    
+    if missing_packages:
+        print(f"\n🔄 Installing {len(missing_packages)} missing packages...")
+        
+        # Detect package manager type
+        package_manager = detect_package_manager()
+        print(f"📦 Using package manager: {package_manager}")
+        
+        for package in missing_packages:
+            try:
+                print(f"Installing {package}...")
+                
+                if package_manager == "uv":
+                    # Use uv add first
+                    result = subprocess.run(["uv", "add", package], 
+                                          capture_output=True, text=True)
+                    if result.returncode != 0:
+                        # If uv add fails, try uv pip
+                        result = subprocess.run(["uv", "pip", "install", package], 
+                                              capture_output=True, text=True)
+                elif package_manager == "pip":
+                    # Use regular pip
+                    result = subprocess.run([sys.executable, "-m", "pip", "install", package, "--quiet"], 
+                                          capture_output=True, text=True)
+                else:
+                    # Fallback to pip
+                    result = subprocess.run([sys.executable, "-m", "pip", "install", package, "--quiet"], 
+                                          capture_output=True, text=True)
+                
+                if result.returncode == 0:
+                    print(f"✅ {package} installed successfully")
+                else:
+                    print(f"❌ Failed to install {package}: {result.stderr}")
+                    return False
+                    
+            except Exception as e:
+                print(f"❌ Failed to install {package}: {e}")
+                return False
+                
+        print("🎉 All packages installed successfully!")
+    else:
+        print("🎉 All required packages are already installed!")
+    
+    return True
+
+def detect_package_manager():
+    """Detect available package manager"""
+    try:
+        # Check for uv
+        result = subprocess.run(["uv", "--version"], capture_output=True, text=True)
+        if result.returncode == 0:
+            return "uv"
+    except FileNotFoundError:
+        pass
+    
+    try:
+        # Check for pip
+        result = subprocess.run([sys.executable, "-m", "pip", "--version"], capture_output=True, text=True)
+        if result.returncode == 0:
+            return "pip"
+    except FileNotFoundError:
+        pass
+    
+    return "unknown"
+
+# Auto-install packages before importing
+print("=" * 50)
+print("Domain Status Checker - Auto Installation")
+print("=" * 50)
+
+if not install_required_packages():
+    print("❌ Failed to install required packages. Exiting...")
+    sys.exit(1)
+
+print("\n🔄 Loading modules...")
+
+# Now import the modules
+import os
 import socket
 import json
 import logging
@@ -12,26 +117,9 @@ import multiprocessing
 from typing import List, Tuple, Optional
 from jinja2 import Environment, FileSystemLoader
 import urllib3
-import subprocess
-import sys
 
-required_packages = [
-    "tqdm",
-    "aiohttp",
-    "beautifulsoup4",
-    "jinja2",
-    "urllib3"
-]
-
-def install_missing_packages():
-    for package in required_packages:
-        try:
-            __import__(package if package != "beautifulsoup4" else "bs4")
-        except ImportError:
-            print(f"📦 Installing missing package: {package}")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-install_missing_packages()
+print("✅ All modules loaded successfully!")
+print("=" * 50)
 
 # Disable InsecureRequestWarning
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -344,19 +432,38 @@ class DomainStatusChecker:
             error_logger.error(f"Error generating HTML report: {e}")
 
 async def main():
+    print("\n🚀 Starting Domain Status Checker...")
     domain_manager = DomainManager()
     if not domain_manager.domain_paths:
         error_logger.error("No domains were found.")
+        print("❌ No domains were found.")
         return
+
+    print(f"✅ Found {len(domain_manager.domains)} domains")
+    print(f"🖥️  Server IP: {domain_manager.server_ip}")
+    print(f"🎛️  Control Panel: {domain_manager.panel_type}")
 
     status_checker = DomainStatusChecker(domain_manager)
     status_checker.check_domains()
     await status_checker.check_domain_statuses()
     status_checker.save_results()
 
-    print("\nThe log has been saved in 'domain_status.log', errors in 'domain_errors.log', "
-          "statuses in 'domain_statuses.log', and HTML report in 'domain_report.html'.")
+    print("\n📊 Results Summary:")
+    print(f"✅ Direct domains: {len(status_checker.direct_domains)}")
+    print(f"🟢 Healthy domains: {len(status_checker.healthy_domains)}")
+    print(f"🔴 Mismatched domains: {len(status_checker.mismatched_domains)}")
+    print(f"🟡 No ping domains: {len(status_checker.no_ping_domains)}")
+
+    print("\n📁 Files saved in /home/transfer/:")
+    print("   - domain_status.log (main log)")
+    print("   - domain_errors.log (errors)")
+    print("   - domain_statuses.log (status checks)")
+    print("   - domain_report.html (HTML report)")
+    print("   - mismatched_domains.txt")
+    print("   - healthy_domains.txt")
+    print("   - direct_domains.txt")
+    print("   - no_ping_domains.txt")
+    print("   - combined_domains.txt")
 
 if __name__ == "__main__":
     asyncio.run(main())
-
